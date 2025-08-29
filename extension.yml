@@ -1,0 +1,10 @@
+id: PullAnalyticalModel
+name: Pull Analytical Model
+title: Pull Analytical Model
+description: Tools to export analytical model data (nodes and members) to JSON.
+author: Alejandro Duarte
+version: 0.1.0
+# NOTE:
+# Removed command-level keys (engine, script, min/max versions) from extension root.
+# Those belong inside each command bundle's bundle.yml. Having them here caused
+# pyRevit to treat the extension itself like a command and report missing script.

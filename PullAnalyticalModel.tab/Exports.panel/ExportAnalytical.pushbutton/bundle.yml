@@ -1,0 +1,9 @@
+id: PullAnalyticalModel.ExportAnalytical
+title: Export Analytical JSON
+tooltip: Export analytical nodes and members from the active document to a JSON file.
+author: Alejandro Duarte
+engine: cpython3
+script: script.py
+# Extend supported Revit versions to include 2026 (installed locally) so CLI can load command
+min_revit_version: 2025
+max_revit_version: 2026

@@ -1,0 +1,8 @@
+id: PullAnalyticalModel.UpdateModelFeatures
+title: Update Model Features
+tooltip: Update host element section types based on edited analytical export JSON.
+author: Alejandro Duarte
+engine: cpython3
+script: script.py
+min_revit_version: 2025
+max_revit_version: 2026
