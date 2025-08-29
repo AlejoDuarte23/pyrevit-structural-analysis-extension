@@ -2,6 +2,8 @@
 
 Minimal pyRevit extension with two buttons: Export Analytical and Update Model Features.
 
+![Demo](assets/gifplugin.gif)
+
 ## 1. Export Analytical
 Button: `ExportAnalytical.pushbutton`
 
@@ -97,5 +99,3 @@ No type hints or modern syntax: kept compatible with Python 3.4 (IronPython). Si
 - `ExportAnalytical.pushbutton/script.py` export logic wrapper.
 - `UpdateModelFeatures.pushbutton/script.py` update routine.
 - `lib/revitio/*.py` helper modules (geometry, nodes, sections, materials, host matching, model structures).
-
-Done.
