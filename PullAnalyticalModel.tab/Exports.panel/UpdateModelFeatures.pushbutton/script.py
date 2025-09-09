@@ -15,7 +15,7 @@ except Exception as _revit_imp_err:
     Transaction = ElementId = FilteredElementCollector = BuiltInCategory = Document = None
     print("[UpdateSections] Warning: Revit API not available ({}).".format(_revit_imp_err))
 
-_DEFAULT_INPUT_PATH = r"C:\Users\aleja\Documents\revit_analytical_exports\Input\updated_sections.json"
+_DEFAULT_INPUT_PATH = os.path.normpath(os.path.join(os.path.expanduser('~'), 'Documents', 'revit_analytical_exports', 'Input', 'updated_sections.json'))
 # Can override with REVIT_ANALYTICAL_UPDATE_JSON
 INPUT_PATH = os.environ.get("REVIT_ANALYTICAL_UPDATE_JSON", _DEFAULT_INPUT_PATH)
 print('[UpdateSections] Using INPUT_PATH={0}'.format(INPUT_PATH))
@@ -221,8 +221,10 @@ def run_update():
     _cli_mode = '__revit__' not in globals()
     _do_sync = os.environ.get('REVIT_ANALYTICAL_AUTO_SYNC', '1').lower() not in ('0', 'false', 'no')
     _force_saveas = True  # always produce a timestamped copy when changes > 0
-    _base_save_folder = os.environ.get('REVIT_ANALYTICAL_SAVEAS_PATH', r'C:\Users\aleja\Documents\revit_analytical_exports')
-
+    _base_save_folder = os.environ.get(
+        'REVIT_ANALYTICAL_SAVEAS_PATH',
+        os.path.normpath(os.path.join(os.path.expanduser('~'), 'Documents', 'revit_analytical_exports'))
+    )
     def _safe_make_dir(p):
         try:
             if not os.path.isdir(p):
