@@ -3,19 +3,25 @@ import os
 import sys
 import json
 import datetime
+
 print('[UpdateSections] script module loading... (__name__={})'.format(__name__))
 
 # Try Revit API import
 try:
     from Autodesk.Revit.DB import (
-    Transaction, ElementId, FilteredElementCollector, BuiltInCategory, Document,
-    SynchronizeWithCentralOptions, TransactWithCentralOptions, RelinquishOptions, SaveAsOptions
+        Transaction, ElementId, FilteredElementCollector, BuiltInCategory, Document,
+        SynchronizeWithCentralOptions, TransactWithCentralOptions, RelinquishOptions, SaveAsOptions,
+        BuiltInParameter, Element
     )
 except Exception as _revit_imp_err:
     Transaction = ElementId = FilteredElementCollector = BuiltInCategory = Document = None
+    SynchronizeWithCentralOptions = TransactWithCentralOptions = RelinquishOptions = SaveAsOptions = None
+    BuiltInParameter = Element = None
     print("[UpdateSections] Warning: Revit API not available ({}).".format(_revit_imp_err))
 
-_DEFAULT_INPUT_PATH = os.path.normpath(os.path.join(os.path.expanduser('~'), 'Documents', 'revit_analytical_exports', 'Input', 'updated_sections.json'))
+_DEFAULT_INPUT_PATH = os.path.normpath(
+    os.path.join(os.path.expanduser('~'), 'Documents', 'revit_analytical_exports', 'Input', 'updated_sections.json')
+)
 # Can override with REVIT_ANALYTICAL_UPDATE_JSON
 INPUT_PATH = os.environ.get("REVIT_ANALYTICAL_UPDATE_JSON", _DEFAULT_INPUT_PATH)
 print('[UpdateSections] Using INPUT_PATH={0}'.format(INPUT_PATH))
@@ -45,6 +51,7 @@ except Exception:
     def ensureOutputDirectory(p=None):
         return p or os.getcwd()
 
+# Acquire active document if possible
 try:
     if '__revit__' in globals():
         _rv = globals()['__revit__']
@@ -55,7 +62,7 @@ except Exception:
     doc = None
 
 if doc is None:
-    # Try open model in CLI
+    # Try open model in CLI via pyrevit HOST_APP
     try:
         from pyrevit import HOST_APP
         if '__models__' in globals() and globals().get('__models__'):
@@ -80,18 +87,89 @@ print('[UpdateSections] doc acquired? {0}'.format('YES' if doc else 'NO'))
 
 LOG_FILE = None
 
+# ----------------------------
+# Robust name helpers for IronPython
+# ----------------------------
+
+def _norm(s):
+    """Trim and ensure plain str."""
+    try:
+        if s is None:
+            return ""
+        return s.strip()
+    except Exception:
+        return s or ""
+
+def get_type_name(sym):
+    """Return the FamilySymbol type name, robust under IronPython."""
+    # 1, Built in parameter is reliable in IronPython
+    try:
+        if BuiltInParameter is not None:
+            p = sym.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+            if p:
+                v = p.AsString()
+                if v:
+                    return _norm(v)
+    except Exception:
+        pass
+    # 2, Static getter avoids IronPython name binding quirks
+    try:
+        if Element is not None:
+            return _norm(Element.Name.__get__(sym))
+    except Exception:
+        pass
+    # 3, Direct attribute last
+    try:
+        return _norm(sym.Name)
+    except Exception:
+        return ""
+
+def get_family_name(sym):
+    """Return the Family name for a symbol, robust under IronPython."""
+    # 1, Try parameter if available on the symbol
+    try:
+        if BuiltInParameter is not None:
+            # Not all versions expose SYMBOL_FAMILY_NAME_PARAM, guard it
+            p = sym.get_Parameter(getattr(BuiltInParameter, 'SYMBOL_FAMILY_NAME_PARAM', None))
+            if p:
+                v = p.AsString()
+                if v:
+                    return _norm(v)
+    except Exception:
+        pass
+    # 2, Use the Family object
+    try:
+        fam = getattr(sym, 'Family', None)
+        if fam is not None:
+            try:
+                if Element is not None:
+                    return _norm(Element.Name.__get__(fam))
+            except Exception:
+                pass
+            try:
+                return _norm(fam.Name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+# ----------------------------
+# Core helpers
+# ----------------------------
+
 def _index_symbols_by_names(revit_doc):
-    """Map (family_name, type_name) to symbol."""
+    """Map (family_name, type_name) to symbol, using robust name access."""
     idx = {}
     try:
         fam_syms = (FilteredElementCollector(revit_doc)
                     .OfCategory(BuiltInCategory.OST_StructuralFraming)
-                    .WhereElementIsElementType()  # type symbols
+                    .WhereElementIsElementType()
                     .ToElements())
         for s in fam_syms:
             try:
-                fam_name = getattr(getattr(s, 'Family', None), 'Name', None)
-                tname = getattr(s, 'Name', None)
+                fam_name = get_family_name(s)
+                tname = get_type_name(s)
                 if fam_name and tname:
                     idx[(fam_name, tname)] = s
             except Exception:
@@ -111,14 +189,20 @@ def _iter_modified_members(data):
         host_uid = rec.get('host_unique_id')
         if host_id is None and host_uid is None:
             continue
-        yield rec.get('id'), host_id, host_uid, section.get('family_name'), section.get('type_name'), section.get('type_id')
-
+        yield (
+            rec.get('id'),
+            host_id,
+            host_uid,
+            _norm(section.get('family_name')),
+            _norm(section.get('type_name')),
+            section.get('type_id'),
+        )
 
 def _resolve_host(doc, host_id, host_uid):
     e = None
     if host_uid:
         try:
-            e = doc.GetElement(host_uid)
+            e = doc.GetElement(host_uid)  # UniqueId overload
         except Exception:
             e = None
     if e is None and host_id is not None:
@@ -127,7 +211,6 @@ def _resolve_host(doc, host_id, host_uid):
         except Exception:
             e = None
     return e
-
 
 def _change_type_if_needed(doc, inst, new_symbol):
     try:
@@ -148,6 +231,9 @@ def _change_type_if_needed(doc, inst, new_symbol):
     except Exception:
         return False
 
+# ----------------------------
+# Main routine
+# ----------------------------
 
 def run_update():
     print('[UpdateSections] Starting update routine.')
@@ -155,55 +241,73 @@ def run_update():
         print('[UpdateSections] No active Revit document. Aborting.')
         return
     if Transaction is None:
-        print('[UpdateSections] Revit API unavailable; cannot proceed.')
+        print('[UpdateSections] Revit API unavailable, cannot proceed.')
         return
     if not os.path.isfile(INPUT_PATH):
         print('[UpdateSections] Input JSON not found: {0}'.format(INPUT_PATH))
         return
+
     print('[UpdateSections] Loading JSON: {0}'.format(INPUT_PATH))
     data = _load_json(INPUT_PATH)
     members = data.get('analytical_members', [])
     print('[UpdateSections] Loaded {0} analytical member records'.format(len(members)))
+
     sym_index = _index_symbols_by_names(doc)
     print('[UpdateSections] Indexed {0} framing symbols'.format(len(sym_index)))
+
     changes = 0
     total_checked = 0
     skipped_missing_symbol = 0
     skipped_no_host = 0
     unchanged = 0
+
     t = Transaction(doc, 'Update Host Section Types')
     t.Start()
     try:
         for mid, host_id, host_uid, fam_name, type_name, type_id in _iter_modified_members(data):
             total_checked += 1
             if not fam_name or not type_name:
-                print('[UpdateSections] member {0}: missing target family/type, skipping'.format(mid))
+                print('[UpdateSections] member {0}: missing target family or type, skipping'.format(mid))
                 continue
+
             sym = sym_index.get((fam_name, type_name))
             if sym is None:
                 skipped_missing_symbol += 1
                 print('[UpdateSections] member {0}: target symbol not found ({1} :: {2})'.format(mid, fam_name, type_name))
                 continue  # unknown symbol name combination
+
             host_elem = _resolve_host(doc, host_id, host_uid)
             if host_elem is None:
                 skipped_no_host += 1
                 print('[UpdateSections] member {0}: host element not resolved (host_id={1} host_uid={2})'.format(mid, host_id, host_uid))
                 continue
-            # Determine current type names
+
+            # Determine current type names using robust getters
             try:
                 cur_type_elem = doc.GetElement(host_elem.GetTypeId())
-                cur_tname = getattr(cur_type_elem, 'Name', None)
-                cur_fname = getattr(getattr(cur_type_elem, 'Family', None), 'Name', None)
+                cur_tname = get_type_name(cur_type_elem)
+                cur_fname = ""
+                try:
+                    # cur_type_elem is a symbol as well
+                    cur_fname = get_family_name(cur_type_elem)
+                except Exception:
+                    cur_fname = ""
             except Exception:
-                cur_tname = cur_fname = None
+                cur_tname = cur_fname = ""
+
             print('[UpdateSections] member {0}: host resolved id={1} current=({2} :: {3}) target=({4} :: {5})'.format(
-                mid, host_elem.Id.IntegerValue if hasattr(host_elem.Id, 'IntegerValue') else host_elem.Id, cur_fname, cur_tname, fam_name, type_name))
+                mid,
+                host_elem.Id.IntegerValue if hasattr(host_elem.Id, 'IntegerValue') else host_elem.Id,
+                cur_fname, cur_tname, fam_name, type_name
+            ))
+
             if _change_type_if_needed(doc, host_elem, sym):
                 changes += 1
                 print('[UpdateSections] member {0}: type CHANGED'.format(mid))
             else:
                 unchanged += 1
                 print('[UpdateSections] member {0}: type unchanged'.format(mid))
+
         t.Commit()
     except Exception as _tx_ex:
         try:
@@ -212,8 +316,10 @@ def run_update():
             pass
         print('[UpdateSections] ERROR inside transaction:', _tx_ex)
         raise
+
     print('[UpdateSections] Summary: processed={0} changed={1} unchanged={2} missing_symbol={3} no_host={4}'.format(
         total_checked, changes, unchanged, skipped_missing_symbol, skipped_no_host))
+
     # Save changes and timestamp copy
     _saved = False
     _synced = False
@@ -225,6 +331,7 @@ def run_update():
         'REVIT_ANALYTICAL_SAVEAS_PATH',
         os.path.normpath(os.path.join(os.path.expanduser('~'), 'Documents', 'revit_analytical_exports'))
     )
+
     def _safe_make_dir(p):
         try:
             if not os.path.isdir(p):
@@ -235,9 +342,9 @@ def run_update():
     try:
         if changes > 0:
             # If workshared do sync first
-            if getattr(doc, 'IsWorkshared', False) and _do_sync:
+            if getattr(doc, 'IsWorkshared', False) and _do_sync and SynchronizeWithCentralOptions and TransactWithCentralOptions:
                 try:
-                    print('[UpdateSections] Attempting SynchronizeWithCentral (pre-SaveAs).')
+                    print('[UpdateSections] Attempting SynchronizeWithCentral (pre SaveAs).')
                     swc_opts = SynchronizeWithCentralOptions()
                     try:
                         rel_opts = RelinquishOptions(True)
@@ -302,7 +409,7 @@ def run_update():
                 except Exception as _ds_ex:
                     print('[UpdateSections] Direct Save failed:', _ds_ex)
         else:
-            print('[UpdateSections] No changes -> no save attempt.')
+            print('[UpdateSections] No changes, no save attempt.')
     except Exception as _persist_ex:
         print('[UpdateSections] Persistence step error:', _persist_ex)
 
@@ -320,7 +427,7 @@ def run_update():
                 'missing_symbol': skipped_missing_symbol,
                 'no_host': skipped_no_host
             },
-            'auto_save': True,  # always-save mode
+            'auto_save': True,
             'auto_sync': _synced,
             'cli_mode': _cli_mode,
             'saved': _saved,
@@ -341,7 +448,7 @@ def _maybe_autorun():
     if _UPDATE_RAN:
         return
     if doc is None:
-        print('[UpdateSections] Skipping autorun; doc is None.')
+        print('[UpdateSections] Skipping autorun, doc is None.')
         return
     print('[UpdateSections] Autorun trigger (__name__={}).'.format(__name__))
     try:
